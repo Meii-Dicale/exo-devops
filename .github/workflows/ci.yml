@@ -1,9 +1,21 @@
 name: CI
 
 on:
+  # Pas de filtre sur les PR : un check requis qui ne démarre jamais resterait "Expected"
+  # et bloquerait le merge d'une PR qui ne touche que le README.
   pull_request:
   push:
     branches: [main]
+    # Sur main, inutile de tout relancer pour de la doc.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# Un run par PR (ou par branche) : un nouveau push annule le run devenu inutile sur une PR,
+# mais jamais sur main, où chaque commit doit garder son verdict (c'est lui qui est livré).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Le jeton GITHUB_TOKEN ne peut que lire le dépôt : la CI n'a rien à écrire.
 permissions:

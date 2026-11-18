@@ -21,7 +21,15 @@ COPY package.json package-lock.json ./
 
 # `npm ci` : installation stricte d'après le package-lock.json (reproductible).
 # `--omit=dev` : on n'installe pas ESLint, Vitest... inutiles en production.
-RUN npm ci --omit=dev
+# Ensuite, npm (et npx, corepack) ne servent plus : on les supprime de l'image.
+# Ils embarquent leurs propres dépendances (dont `tar`), signalées par Trivy,
+# alors que l'application ne les utilise jamais (elle démarre avec `node`).
+# `apk upgrade` applique les correctifs Alpine publiés depuis l'image de base.
+RUN npm ci --omit=dev \
+ && npm cache clean --force \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+ && apk upgrade --no-cache
 
 # Maintenant seulement, on copie le code source (ce qui change souvent).
 COPY src ./src

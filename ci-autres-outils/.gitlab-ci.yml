@@ -1,0 +1,102 @@
+# Traduction GitLab CI de .github/workflows/ci.yml.
+
+# Un seul stage : les quatre jobs tournent en parallèle, comme les jobs GitHub sans "needs".
+stages:
+  - test
+
+variables:
+  COVERAGE_MIN: "75"
+  # Cache npm dans le projet : GitLab ne met en cache que des chemins du répertoire de build.
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+
+# Équivalent des déclencheurs pull_request + push sur main.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Pas de "paths-ignore" en GitLab : on liste ce qui DOIT déclencher (liste blanche).
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - api/**/*
+        - front/**/*
+        - compose.yaml
+        - .gitlab-ci.yml
+      # Sur main, un nouveau commit n'annule jamais le pipeline en cours.
+      auto_cancel:
+        on_new_commit: none
+
+# interruptible : un pipeline de MR peut être annulé par un nouveau push.
+default:
+  interruptible: true
+
+# Cache npm par lockfile (clé = hash du fichier), comme setup-node.
+.cache-api: &cache-api
+  cache:
+    key:
+      files:
+        - api/package-lock.json
+      prefix: api
+    paths:
+      - .npm/
+
+api:
+  stage: test
+  image: node:${NODE}-alpine
+  # Les jobs s'appellent "api: [20]" et "api: [22]".
+  parallel:
+    matrix:
+      - NODE: ["20", "22"]
+  <<: *cache-api
+  script:
+    - cd api
+    - npm ci --prefer-offline
+    - npm run lint
+    - npm run format:check
+    - npm run test:coverage
+    - pct=$(node -p "require('./coverage/coverage-summary.json').total.lines.pct")
+    - echo "Couverture des lignes (Node ${NODE}) : ${pct} % (seuil ${COVERAGE_MIN} %)"
+    - awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { exit (p < min) }' || { echo "Couverture insuffisante"; exit 1; }
+
+api-integration:
+  stage: test
+  image: node:20-alpine
+  <<: *cache-api
+  services:
+    - name: postgres:16-alpine
+      alias: db
+  variables:
+    POSTGRES_USER: taskflow
+    POSTGRES_PASSWORD: taskflow
+    POSTGRES_DB: taskflow
+    # Le job tourne DANS un conteneur : la base est joignable par l'alias du service, pas localhost.
+    DATABASE_URL: postgres://taskflow:taskflow@db:5432/taskflow
+  script:
+    # Postgres n'ouvre le port TCP qu'une fois l'initialisation terminée : port ouvert = base prête.
+    - until nc -z db 5432; do sleep 1; done
+    - cd api
+    - npm ci --prefer-offline
+    - npm run test:int
+
+front:
+  stage: test
+  image: node:20-alpine
+  cache:
+    key:
+      files:
+        - front/package-lock.json
+      prefix: front
+    paths:
+      - .npm/
+  script:
+    - cd front
+    - npm ci --prefer-offline
+    - npm run lint
+    - npm run format:check
+    - npm test
+    - npm run build
+    # GitLab ne fait qu'avertir si l'artefact est vide : on vérifie nous-mêmes.
+    - test -f dist/index.html
+  artifacts:
+    name: front-dist
+    paths:
+      - front/dist/
+    expire_in: 7 days

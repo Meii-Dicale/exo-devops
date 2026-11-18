@@ -1,0 +1,305 @@
+name: Release
+
+# Un merge sur main : build -> scan Trivy -> publication ghcr.io -> staging -> production (après approbation).
+# Lancement manuel avec un tag : rollback d'UN environnement vers une image déjà publiée, sans rien reconstruire.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Rollback : SHA court (7 caractères) d'une image déjà publiée. Vide = construire et livrer main."
+        type: string
+        default: ''
+      environment:
+        description: 'Environnement à remettre à ce tag (ignoré si tag est vide)'
+        type: choice
+        options: [staging, production]
+        default: staging
+
+# Aucun droit par défaut : chaque job déclare le strict nécessaire.
+permissions: {}
+
+jobs:
+  # Décide QUOI faire : quel tag, construire ou non, quels environnements.
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      owner: ${{ steps.plan.outputs.owner }}
+      build: ${{ steps.plan.outputs.build }}
+      staging: ${{ steps.plan.outputs.staging }}
+      production: ${{ steps.plan.outputs.production }}
+    steps:
+      - name: Établir le plan
+        id: plan
+        # Les entrées passent par env : jamais ${{ inputs.* }} dans le script (injection de commandes).
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_ENV: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"   # ghcr.io exige des minuscules
+          if [ "$GITHUB_EVENT_NAME" = "push" ] || [ -z "$INPUT_TAG" ]; then
+            # Livraison normale : on construit, donc uniquement depuis main.
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error title=Branche refusée::on ne construit que main (ici : $GITHUB_REF)"
+              exit 1
+            fi
+            tag="${GITHUB_SHA::7}"; build=true; staging=true; production=true
+          else
+            # Rollback : le tag doit être un SHA court, rien d'autre.
+            if [[ ! "$INPUT_TAG" =~ ^[0-9a-f]{7}$ ]]; then
+              echo "::error title=Tag invalide::attendu 7 caractères hexadécimaux"
+              exit 1
+            fi
+            tag="$INPUT_TAG"; build=false; staging=false; production=false
+            if [ "$INPUT_ENV" = "production" ]; then production=true; else staging=true; fi
+          fi
+          {
+            echo "tag=$tag"; echo "owner=$owner"; echo "build=$build"
+            echo "staging=$staging"; echo "production=$production"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Plan de release"
+            echo
+            echo "| Tag | Construire | Staging | Production |"
+            echo "| --- | --- | --- | --- |"
+            echo "| \`$tag\` | $build | $staging | $production |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Une image par composant : build local -> scan -> push de CETTE image (celle qui a été scannée).
+  images:
+    name: images (${{ matrix.component }})
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write   # publier sur ghcr.io
+    strategy:
+      # Les deux rapports Trivy restent visibles même si une image échoue.
+      fail-fast: false
+      matrix:
+        component: [api, front]
+    env:
+      IMAGE: ghcr.io/${{ needs.prepare.outputs.owner }}/taskflow-${{ matrix.component }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Préparer Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # load: true = l'image reste dans le Docker du runner ; rien n'est publié avant le scan.
+      - name: Construire l'image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.component }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: APP_VERSION=${{ env.TAG }}
+          # Relie le paquet ghcr.io au dépôt (droits d'accès hérités du dépôt).
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      # Échec sur une vulnérabilité CRITICAL pour laquelle un correctif existe.
+      - name: Scanner l'image (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ env.TAG }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+          output: trivy-${{ matrix.component }}.txt
+
+      # Le rapport est publié même (surtout) quand le scan échoue.
+      - name: Rapport Trivy dans le résumé
+        if: ${{ !cancelled() }}
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          {
+            echo "### Trivy : taskflow-${COMPONENT} (CRITICAL corrigeables)"
+            echo
+            echo '```'
+            if [ -s "trivy-${COMPONENT}.txt" ]; then cat "trivy-${COMPONENT}.txt"; else echo "Aucune vulnérabilité CRITICAL corrigeable."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Le step "post" de login-action fait le logout en fin de job.
+      - name: Se connecter à ghcr.io
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publier l'image scannée
+        run: |
+          docker tag "$IMAGE:$TAG" "$IMAGE:latest"
+          docker push --quiet "$IMAGE:$TAG"
+          docker push --quiet "$IMAGE:latest"
+          echo "Publié : \`$IMAGE:$TAG\` (et \`:latest\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-staging:
+    name: deploy-staging
+    needs: [prepare, images]
+    # !cancelled() : tourner même si "images" a été sauté (rollback), à condition qu'il n'ait pas échoué.
+    if: >-
+      !cancelled()
+      && needs.prepare.result == 'success'
+      && needs.prepare.outputs.staging == 'true'
+      && (needs.images.result == 'success' || needs.images.result == 'skipped')
+    runs-on: [self-hosted, lab]
+    timeout-minutes: 15
+    environment:
+      name: staging
+      url: http://localhost:${{ vars.FRONT_PORT || '8081' }}
+    permissions:
+      contents: read
+      packages: read    # tirer les images de ghcr.io
+    # Un seul déploiement de staging à la fois, jamais interrompu en cours de route.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      FRONT_PORT: ${{ vars.FRONT_PORT || '8081' }}
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # STAGING_DIR est une variable du processus du runner : lisible dans run:, pas dans ${{ env }}.
+      - name: Copier la configuration versionnée dans STAGING_DIR
+        run: |
+          if [ -z "${STAGING_DIR:-}" ] || [ ! -f "$STAGING_DIR/.env" ]; then
+            echo "::error title=Staging introuvable::STAGING_DIR absent ou sans .env"
+            exit 1
+          fi
+          cp compose.staging.yaml deploy/deploy.sh deploy/smoke-test.sh deploy/backup.sh "$STAGING_DIR/"
+
+      - name: Se connecter à ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Déployer
+        run: cd "$STAGING_DIR" && COMPOSE_FILE=compose.staging.yaml ./deploy.sh "$TAG"
+
+      # Le runner est un conteneur : localhost serait lui-même, la stack est sur l'hôte.
+      - name: Smoke test
+        run: cd "$STAGING_DIR" && ./smoke-test.sh "http://host.docker.internal:${FRONT_PORT}/health" "$TAG"
+
+      # Runner persistant : ne pas laisser les identifiants au job suivant.
+      - name: Se déconnecter de ghcr.io
+        if: always()
+        run: docker logout ghcr.io
+
+  deploy-production:
+    name: deploy-production
+    needs: [prepare, images, deploy-staging]
+    # Staging doit être vert, sauf rollback de la production seule (staging volontairement sauté).
+    if: >-
+      !cancelled()
+      && needs.prepare.result == 'success'
+      && needs.prepare.outputs.production == 'true'
+      && (needs.images.result == 'success' || needs.images.result == 'skipped')
+      && (needs.deploy-staging.result == 'success'
+          || (needs.deploy-staging.result == 'skipped' && needs.prepare.outputs.staging != 'true'))
+    runs-on: [self-hosted, lab]
+    timeout-minutes: 20
+    # Required reviewers + branche main uniquement : réglés dans Settings > Environments.
+    environment:
+      name: production
+      url: https://taskflow.localhost
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      HTTPS_PORT: ${{ vars.HTTPS_PORT || '443' }}
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Copier la configuration versionnée dans PROD_DIR
+        run: |
+          if [ -z "${PROD_DIR:-}" ] || [ ! -f "$PROD_DIR/.env" ] || [ ! -f "$PROD_DIR/certs/taskflow.crt" ]; then
+            echo "::error title=Production introuvable::PROD_DIR absent, sans .env ou sans certs/"
+            exit 1
+          fi
+          mkdir -p "$PROD_DIR/nginx"
+          cp compose.prod.yaml deploy/deploy.sh deploy/smoke-test.sh deploy/backup.sh deploy/gen-cert.sh "$PROD_DIR/"
+          cp deploy/nginx/taskflow.conf "$PROD_DIR/nginx/"
+
+      - name: Se connecter à ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # Avant de toucher à la prod : une sauvegarde de la base (si elle tourne déjà).
+      - name: Sauvegarder la base
+        run: |
+          cd "$PROD_DIR"
+          if docker compose -f compose.prod.yaml ps --status running --services | grep -qx db; then
+            ./backup.sh
+          else
+            echo "Base de production arrêtée ou absente : rien à sauvegarder."
+          fi
+
+      # La version en place est mémorisée AVANT le déploiement : c'est la cible du rollback.
+      - name: Déployer
+        id: deploy
+        run: |
+          cd "$PROD_DIR"
+          echo "previous=$(cat .deployed_tag 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          ./deploy.sh "$TAG"
+
+      # --cacert : le certificat est VÉRIFIÉ (son SAN contient host.docker.internal), pas ignoré avec -k.
+      - name: Smoke test (HTTPS)
+        id: smoke
+        run: |
+          cd "$PROD_DIR"
+          SMOKE_CURL_OPTS="--cacert $PROD_DIR/certs/taskflow.crt" \
+            ./smoke-test.sh "https://host.docker.internal:${HTTPS_PORT}/health" "$TAG"
+
+      # Le service est rétabli, mais le job reste ROUGE : l'incident doit être vu et analysé.
+      - name: Rollback automatique
+        if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        env:
+          PREVIOUS: ${{ steps.deploy.outputs.previous }}
+        run: |
+          cd "$PROD_DIR"
+          if [ -z "$PREVIOUS" ] || [ "$PREVIOUS" = "$TAG" ]; then
+            echo "::error title=Rollback impossible::aucune version précédente différente de $TAG"
+            exit 1
+          fi
+          echo "::warning title=Rollback::$TAG en échec, retour à $PREVIOUS"
+          ./deploy.sh "$PREVIOUS"
+          SMOKE_CURL_OPTS="--cacert $PROD_DIR/certs/taskflow.crt" \
+            ./smoke-test.sh "https://host.docker.internal:${HTTPS_PORT}/health" "$PREVIOUS"
+          echo "Rollback : \`$TAG\` en échec, \`$PREVIOUS\` redéployé." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Se déconnecter de ghcr.io
+        if: always()
+        run: docker logout ghcr.io

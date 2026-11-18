@@ -1,0 +1,111 @@
+// Traduction Jenkins (pipeline déclaratif) de .github/workflows/ci.yml.
+// Prérequis côté Jenkins : plugins Pipeline, Docker Pipeline ; un agent avec accès à Docker.
+// Les déclencheurs (PR, push sur main) ne sont pas dans le fichier : c'est le job
+// Multibranch Pipeline (et le webhook) qui les porte.
+
+pipeline {
+  // Pas d'agent global : chaque stage choisit son conteneur.
+  agent none
+
+  options {
+    timeout(time: 20, unit: 'MINUTES')
+    // Équivalent de concurrency + cancel-in-progress : un nouveau build annule le précédent
+    // sur la même branche / PR.
+    disableConcurrentBuilds(abortPrevious: true)
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  environment {
+    COVERAGE_MIN = '75'
+    // Le conteneur tourne avec l'UID de Jenkins, sans HOME accessible : cache npm dans /tmp.
+    npm_config_cache = '/tmp/.npm'
+  }
+
+  stages {
+    // La matrice ne peut pas être imbriquée dans un parallel : elle forme son propre stage.
+    stage('api') {
+      matrix {
+        axes {
+          axis {
+            name 'NODE'
+            values '20', '22'
+          }
+        }
+        // Sans reuseNode, chaque cellule a son propre workspace (pas de node_modules partagé).
+        agent {
+          docker { image "node:${NODE}-alpine" }
+        }
+        stages {
+          stage('lint, format, tests') {
+            steps {
+              dir('api') {
+                sh 'npm ci'
+                sh 'npm run lint'
+                sh 'npm run format:check'
+                sh 'npm run test:coverage'
+                // Pas de jq dans l'image alpine : node lit le résumé JSON.
+                sh '''
+                  pct=$(node -p "require('./coverage/coverage-summary.json').total.lines.pct")
+                  echo "Couverture des lignes (Node ${NODE}) : ${pct} % (seuil ${COVERAGE_MIN} %)"
+                  if awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { exit !(p < min) }'; then
+                    echo "Couverture insuffisante : ${pct} % < ${COVERAGE_MIN} %"
+                    exit 1
+                  fi
+                '''
+              }
+            }
+          }
+        }
+      }
+    }
+
+    stage('intégration et front') {
+      parallel {
+        stage('api-integration') {
+          // Agent avec la CLI Docker : c'est le pipeline qui lance Postgres (pas de "services:").
+          agent any
+          steps {
+            script {
+              def pg = docker.image('postgres:16-alpine')
+              pg.withRun('-e POSTGRES_USER=taskflow -e POSTGRES_PASSWORD=taskflow -e POSTGRES_DB=taskflow') { db ->
+                // Attendre que la base soit PRÊTE (pas seulement démarrée), comme le healthcheck GitHub.
+                pg.inside("--link ${db.id}:db") {
+                  sh 'until pg_isready -h db -U taskflow -d taskflow; do sleep 1; done'
+                }
+                docker.image('node:20-alpine').inside("--link ${db.id}:db") {
+                  dir('api') {
+                    sh 'npm ci'
+                    // La base est joignable par son alias "db", pas par localhost.
+                    sh 'DATABASE_URL=postgres://taskflow:taskflow@db:5432/taskflow npm run test:int'
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        stage('front') {
+          agent {
+            docker { image 'node:20-alpine' }
+          }
+          steps {
+            dir('front') {
+              sh 'npm ci'
+              sh 'npm run lint'
+              sh 'npm run format:check'
+              sh 'npm test'
+              sh 'npm run build'
+            }
+          }
+          post {
+            success {
+              // allowEmptyArchive: false = équivalent de if-no-files-found: error.
+              // La durée de rétention se règle sur le job (buildDiscarder), pas par artefact.
+              archiveArtifacts artifacts: 'front/dist/**', allowEmptyArchive: false, fingerprint: true
+            }
+          }
+        }
+      }
+    }
+  }
+}

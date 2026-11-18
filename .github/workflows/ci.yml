@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Seuil de couverture des lignes (tests unitaires de l'API), défini une seule fois.
+  # 75 % : la couverture actuelle est ~81 %, on garde ~6 points de marge pour un refactoring,
+  # mais la suppression d'un fichier de tests (chute vers ~37 %) est bloquée.
+  COVERAGE_MIN: 75
+
 jobs:
   api:
     name: api
@@ -47,6 +53,30 @@ jobs:
 
       - name: Tests unitaires et couverture
         run: npm run test:coverage
+
+      # Tableau dans l'onglet Summary du run + échec (annotation rouge) sous le seuil.
+      # awk compare des décimaux ; matrix.node passe par env (pas d'expression dans le script).
+      - name: Vérifier la couverture (seuil ${{ env.COVERAGE_MIN }} %)
+        env:
+          NODE_VERSION: ${{ matrix.node }}
+        run: |
+          pct=$(jq -r '.total.lines.pct' coverage/coverage-summary.json)
+          {
+            echo "### Couverture de l'API (Node ${NODE_VERSION})"
+            echo
+            echo "| Mesure | Couverture |"
+            echo "| --- | --- |"
+            for k in lines statements functions branches; do
+              echo "| ${k} | $(jq -r ".total.${k}.pct" coverage/coverage-summary.json) % |"
+            done
+            echo
+            echo "Seuil bloquant (lignes) : ${COVERAGE_MIN} %"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { exit !(p < min) }'; then
+            echo "::error title=Couverture insuffisante::lignes ${pct} % < ${COVERAGE_MIN} %"
+            exit 1
+          fi
+          echo "Couverture des lignes : ${pct} % (seuil ${COVERAGE_MIN} %)"
 
   # Tests d'intégration : vraie base PostgreSQL, verdict séparé du job api.
   # Pas de "needs: api" : les deux jobs tournent en parallèle, retour plus rapide.

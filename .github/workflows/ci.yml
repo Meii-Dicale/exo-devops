@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  # Pas de filtre sur les PR : un check requis qui ne démarre jamais resterait "Expected"
+  # et bloquerait le merge d'une PR qui ne touche que le README.
+  pull_request:
+  push:
+    branches: [main]
+    # Sur main, inutile de tout relancer pour de la doc.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# Un run par PR (ou par branche) : un nouveau push annule le run devenu inutile sur une PR,
+# mais jamais sur main, où chaque commit doit garder son verdict (c'est lui qui est livré).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Le jeton GITHUB_TOKEN ne peut que lire le dépôt : la CI n'a rien à écrire.
+permissions:
+  contents: read
+
+env:
+  # Seuil de couverture des lignes (tests unitaires de l'API), défini une seule fois.
+  # 75 % : la couverture actuelle est ~81 %, on garde ~6 points de marge pour un refactoring,
+  # mais la suppression d'un fichier de tests (chute vers ~37 %) est bloquée.
+  COVERAGE_MIN: 75
+
+jobs:
+  api:
+    name: api
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Node 20 = la version des images Docker ; Node 22 = la prochaine LTS.
+    # fail-fast: false garde le verdict des deux versions même si l'une échoue.
+    # Les checks s'appellent "api (20)" et "api (22)" : c'est ce nom que le ruleset exige.
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v7
+
+      - name: Installer Node ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          # Chemin depuis la RACINE du dépôt : setup-node ignore working-directory.
+          cache-dependency-path: api/package-lock.json
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Format (Prettier)
+        run: npm run format:check
+
+      - name: Tests unitaires et couverture
+        run: npm run test:coverage
+
+      # Tableau dans l'onglet Summary du run + échec (annotation rouge) sous le seuil.
+      # awk compare des décimaux ; matrix.node passe par env (pas d'expression dans le script).
+      - name: Vérifier la couverture (seuil ${{ env.COVERAGE_MIN }} %)
+        env:
+          NODE_VERSION: ${{ matrix.node }}
+        run: |
+          pct=$(jq -r '.total.lines.pct' coverage/coverage-summary.json)
+          {
+            echo "### Couverture de l'API (Node ${NODE_VERSION})"
+            echo
+            echo "| Mesure | Couverture |"
+            echo "| --- | --- |"
+            for k in lines statements functions branches; do
+              echo "| ${k} | $(jq -r ".total.${k}.pct" coverage/coverage-summary.json) % |"
+            done
+            echo
+            echo "Seuil bloquant (lignes) : ${COVERAGE_MIN} %"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { exit !(p < min) }'; then
+            echo "::error title=Couverture insuffisante::lignes ${pct} % < ${COVERAGE_MIN} %"
+            exit 1
+          fi
+          echo "Couverture des lignes : ${pct} % (seuil ${COVERAGE_MIN} %)"
+
+  # Tests d'intégration : vraie base PostgreSQL, verdict séparé du job api.
+  # Pas de "needs: api" : les deux jobs tournent en parallèle, retour plus rapide.
+  api-integration:
+    name: api-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        # Base jetable, mêmes identifiants qu'en local : ce n'est pas un secret.
+        env:
+          POSTGRES_USER: taskflow
+          POSTGRES_PASSWORD: taskflow
+          POSTGRES_DB: taskflow
+        # Les steps tournent sur la VM, pas dans un conteneur : il faut publier le port.
+        ports:
+          - 5432:5432
+        # Le job attend "healthy" (base prête à répondre), pas seulement "conteneur démarré".
+        options: >-
+          --health-cmd "pg_isready -U taskflow -d taskflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://taskflow:taskflow@localhost:5432/taskflow
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v7
+
+      - name: Installer Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Tests d'intégration (PostgreSQL)
+        run: npm run test:int
+
+  front:
+    name: front
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v7
+
+      - name: Installer Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Format (Prettier)
+        run: npm run format:check
+
+      - name: Tests unitaires
+        run: npm test
+
+      - name: Build (Vite)
+        run: npm run build
+
+      # Le build est conservé 7 jours, téléchargeable depuis la page du run.
+      # path part de la racine du dépôt : upload-artifact ignore working-directory.
+      # if-no-files-found: error -> un build vide fait échouer le job au lieu de passer en silence.
+      - name: Conserver le build (front-dist)
+        uses: actions/upload-artifact@v7
+        with:
+          name: front-dist
+          path: front/dist
+          retention-days: 7
+          if-no-files-found: error

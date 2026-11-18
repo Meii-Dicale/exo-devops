@@ -14,6 +14,13 @@ jobs:
     name: api
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Node 20 = la version des images Docker ; Node 22 = la prochaine LTS.
+    # fail-fast: false garde le verdict des deux versions même si l'une échoue.
+    # Les checks s'appellent "api (20)" et "api (22)" : c'est ce nom que le ruleset exige.
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
     defaults:
       run:
         working-directory: api
@@ -21,10 +28,10 @@ jobs:
       - name: Récupérer le code
         uses: actions/checkout@v7
 
-      - name: Installer Node 20
+      - name: Installer Node ${{ matrix.node }}
         uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
           # Chemin depuis la RACINE du dépôt : setup-node ignore working-directory.
           cache-dependency-path: api/package-lock.json

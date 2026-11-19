@@ -1,0 +1,12 @@
+# Règles ZAP baseline (zap-baseline.py -c rules.tsv). Format : id<TAB>action<TAB>commentaire.
+# Action : FAIL (job rouge), WARN (signalé), IGNORE (exception justifiée dans docs/SECURITE.md).
+# Les en-têtes corrigés passent en FAIL : leur disparition doit casser la PR.
+10020	FAIL	(Anti-clickjacking : X-Frame-Options DENY + frame-ancestors none)
+10021	FAIL	(X-Content-Type-Options nosniff)
+10036	FAIL	(Version de nginx dans Server : server_tokens off)
+10037	FAIL	(X-Powered-By: Express masqué par proxy_hide_header)
+10038	FAIL	(Content-Security-Policy absente)
+10063	FAIL	(Permissions-Policy absente)
+20020	FAIL	(Version de nginx vulnérable visible)
+10049	IGNORE	(Contenu cachable : pages statiques publiques, aucune donnée utilisateur dans le HTML. Voir SECURITE.md)
+10109	IGNORE	(Modern Web Application : information, pas une faille. Voir SECURITE.md)

@@ -27,6 +27,13 @@ resource "docker_network" "this" {
 
 resource "docker_volume" "pgdata" {
   name = "${local.prefix}-pgdata"
+
+  # Le volume a été créé par Compose, qui y a posé ses labels com.docker.compose.*.
+  # Pour Docker, les labels d'un volume ne se modifient pas : sans cette ligne, le
+  # plan détruit et recrée le volume (labels # forces replacement), donc la base.
+  lifecycle {
+    ignore_changes = [labels]
+  }
 }
 
 # ---------- Images ------------------------------------------------------------
@@ -135,6 +142,9 @@ resource "docker_container" "front" {
     interval = "10s"
     timeout  = "3s"
     retries  = 3
+    # Comme le HEALTHCHECK de front/Dockerfile. Sans cette ligne, Docker reprend
+    # 5s depuis l'image et chaque plan propose de le remettre à 0s.
+    start_period = "5s"
   }
 
   depends_on = [docker_container.api]

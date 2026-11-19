@@ -72,7 +72,7 @@ services:
 
   # Reverse proxy : point d'entrée unique, termine le TLS, redirige HTTP -> HTTPS.
   proxy:
-    image: docker.io/library/nginx:1.29-alpine
+    image: docker.io/library/nginx:1.30-alpine
     # SEUL service qui publie des ports. Si 80/443 sont pris (ou Docker rootless) :
     # HTTP_PORT=8082 et HTTPS_PORT=8443 dans .env (8080 = dev, 8081 = staging).
     ports:

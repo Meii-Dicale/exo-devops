@@ -139,6 +139,39 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # SBOM (nomenclature) de l'image qui va être publiée : la liste de ses paquets
+      # (Alpine et npm) au format CycloneDX. Le jour où une CVE sort, on cherche dans les
+      # SBOM quelles versions publiées la contiennent, sans reconstruire ni re-scanner.
+      # Les options du scan ci-dessus (CRITICAL, exit-code 1) ne fuient pas ici : la
+      # version épinglée vide son fichier d'options à chaque appel (issue #422).
+      - name: Générer le SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ env.TAG }}
+          format: cyclonedx
+          output: sbom-${{ matrix.component }}-${{ env.TAG }}.cdx.json
+
+      # Un SBOM sans composant serait un faux livrable : on vérifie avant de publier.
+      - name: Vérifier le SBOM
+        env:
+          COMPONENT: ${{ matrix.component }}
+          FILE: sbom-${{ matrix.component }}-${{ env.TAG }}.cdx.json
+        run: |
+          count="$(jq '.components | length' "$FILE")"
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=SBOM vide::$FILE ne liste aucun composant"
+            exit 1
+          fi
+          echo "SBOM \`taskflow-${COMPONENT}\` : ${count} composants (CycloneDX, artefact \`${FILE%.cdx.json}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publier le SBOM (artefact, 90 jours)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ matrix.component }}-${{ env.TAG }}
+          path: sbom-${{ matrix.component }}-${{ env.TAG }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
       # Le step "post" de login-action fait le logout en fin de job.
       - name: Se connecter à ghcr.io
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0

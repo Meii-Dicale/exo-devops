@@ -1,0 +1,44 @@
+name: actionlint
+
+# Bonus étape 1 : vérifie la syntaxe des workflows (expressions ${{ }}, needs, matrices…)
+# et, via shellcheck, les scripts des blocs run:.
+#
+# Filtré sur .github/workflows/** : une PR qui ne touche pas aux workflows ne le lance pas.
+# C'est pour ça qu'il ne doit PAS être un check requis : sur une telle PR, le check ne
+# démarrerait jamais, resterait « Expected » et bloquerait le merge pour toujours.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Image officielle épinglée par digest : elle contient aussi shellcheck et pyflakes.
+      # Le format "::error file=…" place les erreurs en annotations sur les lignes de la PR.
+      - name: Lancer actionlint 1.7.7
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          docker.io/rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
+          -no-color
+          -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}\n{{end}}'

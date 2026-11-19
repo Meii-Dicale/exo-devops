@@ -15,6 +15,7 @@ Les contrôles de sécurité du projet, le triage des alertes, les corrections, 
 | Code (SAST, flux de données) | **CodeQL** v4.39.3 (`security-extended`, sans compilation) | `codeql.yml` › `codeql (javascript-typescript)` | PR, push `main`, lundi | une donnée utilisateur qui atteint une requête SQL, un `exec`, une page… **à travers plusieurs fonctions** |
 | Application (DAST) | **ZAP baseline** 2.17.0 + `.zap/rules.tsv` | `security.yml` › `dast` | PR, push `main`, lundi | en-têtes, fuites d'information, cookies |
 | Image (SCA) | **Trivy** (bloquant sur CRITICAL corrigeable, `ignore-unfixed`) | `release.yml` | push `main` | une CVE dans l'image publiée |
+| Nomenclature (SBOM) | **Trivy**, CycloneDX, images api et front | `release.yml` › `images`, artefact 90 jours | push `main` | savoir **quelles versions publiées** contiennent un paquet touché par une CVE découverte plus tard |
 | Configuration IaC | `tofu validate` / `plan` (drift) | `iac.yml` | PR, planifié | une infra qui dérive du code |
 | Durcissement HTTP | en-têtes **Nginx** | `front/nginx.conf`, proxy | chaque requête | XSS, clickjacking, fuite de version |
 | Moindre privilège | `permissions: contents: read`, actions **épinglées par SHA** | tous les workflows | toujours | un jeton détourné, une action modifiée après coup |
@@ -90,6 +91,11 @@ volontairement un `style` inline : le test n'est pas aveugle.
   de vie, est suivi dans [#25](https://github.com/Meii-Dicale/exo-devops/issues/25).
 - Contrôles après montée : tests (api 38, front 7), couverture api 88,7 % (seuil 75 %), lint, Prettier,
   `npm run build`, et l'image du front reconstruite et testée dans le navigateur.
+- **SBOM** : chaque release publie `sbom-api-<tag>` et `sbom-front-<tag>` (artefacts du run `Release`). Sur bfbed20 :
+  113 composants pour l'API (dont `express` 4.22.3, `body-parser` 1.20.9, `pg` 8.23.1, Alpine 3.23.4), 72 pour le
+  front (`nginx` 1.30.7, Alpine 3.24.4), **aucun outil de dev** (vitest, supertest, eslint absents de l'image). Le
+  jour où une CVE touche un paquet, on cherche sans rien reconstruire :
+  `jq -r '.components[] | select(.name=="body-parser") | .version' sbom-api-*.cdx.json`.
 
 ## 5. Registre des exceptions
 
@@ -140,6 +146,10 @@ et une ligne datée dans ce registre.
 - TaskFlow n'a **ni authentification ni comptes** : OWASP A01 (contrôle d'accès) et A07 (authentification) ne
   s'appliquent pas encore à ce code.
 - Node.js 20 en fin de vie : [#25](https://github.com/Meii-Dicale/exo-devops/issues/25).
+- Le **SBOM ne liste pas le runtime Node.js** : l'image officielle `node` installe Node depuis une archive, pas par
+  `apk` ni `npm`, et Trivy ne le recense pas (vérifié sur bfbed20). Un Node en fin de vie (#25) n'y apparaît donc pas.
+  Le SBOM n'est pas non plus signé ni attaché à l'image (attestation `docker buildx --sbom`, cosign) : c'est un
+  artefact du run, à conserver ailleurs si on veut le garder plus de 90 jours.
 
 ## 7. En cas de secret exposé
 

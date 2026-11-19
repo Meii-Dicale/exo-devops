@@ -12,6 +12,7 @@ Les contrôles de sécurité du projet, le triage des alertes, les corrections, 
 | Dépendances (SCA) | **npm audit** `--audit-level=high`, api et front | `security.yml` › `dependances` | PR, push `main`, **lundi** | une dépendance avec une CVE connue |
 | Dépendances (veille) | **Dependabot** | `.github/dependabot.yml` | chaque semaine | des dépendances qui vieillissent |
 | Code (SAST) | **Semgrep** 1.184.0 (`p/javascript`, `p/nodejsscan`, `--error`) | `security.yml` › `sast` | PR, push `main`, lundi | injection SQL, XSS, `eval`, secrets en dur |
+| Code (SAST, flux de données) | **CodeQL** v4.39.3 (`security-extended`, sans compilation) | `codeql.yml` › `codeql (javascript-typescript)` | PR, push `main`, lundi | une donnée utilisateur qui atteint une requête SQL, un `exec`, une page… **à travers plusieurs fonctions** |
 | Application (DAST) | **ZAP baseline** 2.17.0 + `.zap/rules.tsv` | `security.yml` › `dast` | PR, push `main`, lundi | en-têtes, fuites d'information, cookies |
 | Image (SCA) | **Trivy** (bloquant sur CRITICAL corrigeable, `ignore-unfixed`) | `release.yml` | push `main` | une CVE dans l'image publiée |
 | Configuration IaC | `tofu validate` / `plan` (drift) | `iac.yml` | PR, planifié | une infra qui dérive du code |
@@ -123,8 +124,16 @@ et une ligne datée dans ce registre.
 
 - La **baseline ZAP est passive** : ni injection (scan actif), ni authentification, ni contrôle d'accès. Elle
   n'explore pas non plus l'API JSON (`/api/*`). Elle ne remplace ni un scan actif sur le staging, ni la revue de code.
-- **Semgrep** (règles publiques) rate une injection construite dans une autre fonction que l'appel : le SAST complète
-  la revue, il ne la remplace pas.
+- **Semgrep** (règles publiques) **ne voit aucune injection SQL dans notre API**. Les règles `node_sqli_injection` ne
+  reconnaissent que `require('pg')` (CommonJS) ; avec `import` (ESM, notre cas), une injection volontaire, même directe,
+  passe sans alerte. **CodeQL** la détecte dans tous les cas, y compris construite dans une autre fonction. Démonstration
+  dans la PR jetable [#29](https://github.com/Meii-Dicale/exo-devops/pull/29). Les deux outils complètent la revue de
+  code, ils ne la remplacent pas.
+- **Pas de limitation de débit** sur l'API (CodeQL `js/missing-rate-limiting`, vu dans #29) : un client peut créer des
+  tâches en boucle. À poser au proxy (`limit_req` de Nginx) ou dans l'API le jour où l'appli est exposée.
+- **Les checks de sécurité ne sont pas obligatoires** : le ruleset `protection-main` n'exige que les 4 checks de
+  `ci.yml`. Un `sast`, `dast` ou `CodeQL` rouge se voit sur la PR mais **ne bloque pas le merge**. Les rendre
+  obligatoires est une décision d'équipe (au prix de PR bloquées par un faux positif le temps de le tracer en § 5).
 - **npm audit** ne connaît que les CVE **publiées**, et rien sur les images de base (Trivy, dans `release.yml`).
 - **Pas de HSTS** : le proxy de prod utilise un certificat auto-signé pour `taskflow.localhost` (lab). Avec un vrai
   domaine et un certificat reconnu, ajouter `Strict-Transport-Security` sur le proxy HTTPS.

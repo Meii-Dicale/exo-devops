@@ -1,0 +1,56 @@
+# ============================================================================
+# codeql.yml : analyse sémantique du code JavaScript (SAST n° 2, en plus de Semgrep).
+#
+# CodeQL construit une base de données du code et suit les données de bout en
+# bout (d'une requête HTTP jusqu'à une requête SQL, par exemple), là où Semgrep
+# cherche surtout des motifs dans un fichier. Les alertes arrivent dans l'onglet
+# Security > Code scanning du dépôt (et en annotations sur les PR).
+#
+# Pas un check obligatoire : c'est un outil de plus pour le triage, pas une porte.
+# Comparaison avec Semgrep et triage : docs/SECURITE.md.
+# ============================================================================
+
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Les requêtes CodeQL évoluent : une analyse hebdomadaire voit les nouvelles.
+  schedule:
+    - cron: "41 6 * * 1" # lundi 06:41 UTC
+  workflow_dispatch:
+
+# Rien par défaut ; le job demande seulement ce dont il a besoin.
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyse:
+    name: codeql (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Publier les résultats (SARIF) dans l'onglet Security.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # JavaScript n'a rien à compiler : build-mode none, CodeQL lit les sources.
+      # security-extended : plus de requêtes que le jeu par défaut (un peu plus de
+      # faux positifs, mais c'est le jeu le plus comparable à p/nodejsscan).
+      - name: Initialiser CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyser
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:javascript-typescript"

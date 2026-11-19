@@ -53,7 +53,8 @@ api:
     - npm run format:check
     - npm run test:coverage
     - pct=$(node -p "require('./coverage/coverage-summary.json').total.lines.pct")
-    - echo "Couverture des lignes (Node ${NODE}) : ${pct} % (seuil ${COVERAGE_MIN} %)"
+    # Entre apostrophes : sinon YAML lit « : » (deux-points + espace) comme une clé.
+    - 'echo "Couverture des lignes (Node ${NODE}) : ${pct} % (seuil ${COVERAGE_MIN} %)"'
     - awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { exit (p < min) }' || { echo "Couverture insuffisante"; exit 1; }
 
 api-integration:

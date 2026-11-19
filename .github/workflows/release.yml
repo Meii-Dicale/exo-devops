@@ -297,7 +297,7 @@ jobs:
             exit 1
           fi
           mkdir -p "$PROD_DIR/nginx"
-          cp compose.prod.yaml deploy/deploy.sh deploy/smoke-test.sh deploy/backup.sh deploy/gen-cert.sh "$PROD_DIR/"
+          cp compose.prod.yaml .env.example deploy/deploy.sh deploy/smoke-test.sh deploy/backup.sh deploy/gen-cert.sh "$PROD_DIR/"
           cp deploy/nginx/taskflow.conf "$PROD_DIR/nginx/"
 
       - name: Se connecter à ghcr.io

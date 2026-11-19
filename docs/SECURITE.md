@@ -112,8 +112,12 @@ jetable du dev (`postgres://taskflow:taskflow@…`).
 
 ### Semgrep
 
-Aucune exception. Pour un faux positif : `// nosemgrep: <id-de-règle>` **sur la ligne** (jamais un `nosemgrep` nu), et
-une ligne datée dans ce registre.
+Pour un faux positif : `// nosemgrep: <id-de-règle>` **sur la ligne** ou celle du dessus (jamais un `nosemgrep` nu),
+et une ligne datée dans ce registre.
+
+| Règle | Où | Pourquoi | Qui | Ajoutée | Revue |
+| --- | --- | --- | --- | --- | --- |
+| `ajinabraham.njsscan.good.good_helmet_checks.helmet_header_x_powered_by` | `api/src/app.js`, `app.disable('x-powered-by')` | règle « good » de `p/nodejsscan` : elle **constate** que X-Powered-By est retiré (bonne pratique), mais `--error` rend tout résultat bloquant. Faux positif | Meii-Dicale | 19/11/2026 | 19/02/2027, ou si une autre règle `njsscan.good.*` se déclenche (envisager alors `--exclude-rule` sur la famille) |
 
 ## 6. Limites connues
 

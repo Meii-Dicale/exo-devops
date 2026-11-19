@@ -109,6 +109,9 @@ export function createApp({
 
   // Ne pas annoncer la technologie (X-Powered-By: Express). Le front le masque déjà
   // (proxy_hide_header), mais l'API ne doit pas dépendre du Nginx placé devant elle.
+  // Semgrep (p/nodejsscan) signale cette BONNE pratique, bloquante avec --error :
+  // faux positif, exception étroite tracée dans docs/SECURITE.md (§ 5).
+  // nosemgrep: ajinabraham.njsscan.good.good_helmet_checks.helmet_header_x_powered_by
   app.disable('x-powered-by');
 
   // /metrics AVANT le logger et la mesure : les collectes de Prometheus (toutes

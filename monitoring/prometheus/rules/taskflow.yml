@@ -1,0 +1,85 @@
+# Règles Prometheus de TaskFlow.
+#   docker compose -f compose.monitoring.yaml exec prometheus promtool check rules /etc/prometheus/rules/taskflow.yml
+#   docker compose -f compose.monitoring.yaml exec prometheus promtool test rules /etc/prometheus/tests/taskflow_test.yml
+groups:
+  # Recording rules : calculées toutes les 15 s et stockées comme de nouvelles séries.
+  # Le dashboard et les alertes lisent un résultat prêt au lieu de recalculer.
+  # Nommage : niveau:métrique:opération.
+  - name: taskflow-red
+    rules:
+      # Rate : requêtes par seconde.
+      - record: taskflow:http_requests:rate5m
+        expr: sum by (job, env) (rate(http_requests_total{job="taskflow-api"}[5m]))
+
+      # Errors : part des réponses 5xx (0 à 1). Tant qu'aucune 5xx n'a eu lieu, la série
+      # du numérateur n'existe pas : le « or ... * 0 » donne alors 0 au lieu d'un vide.
+      # Sans trafic du tout, pas de valeur (0/0).
+      - record: taskflow:http_errors:ratio5m
+        expr: |
+          (
+            sum by (job, env) (rate(http_requests_total{job="taskflow-api", status_code=~"5.."}[5m]))
+            or
+            sum by (job, env) (rate(http_requests_total{job="taskflow-api"}[5m])) * 0
+          )
+          /
+          sum by (job, env) (rate(http_requests_total{job="taskflow-api"}[5m]))
+
+      # Duration : 95e percentile de la durée des requêtes, en secondes.
+      - record: taskflow:http_request_duration_seconds:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, env, le) (rate(http_request_duration_seconds_bucket{job="taskflow-api"}[5m])))
+
+  - name: taskflow-alertes
+    rules:
+      # Symptôme utilisateur : /health, à travers le front, ne répond pas « ok ».
+      - alert: TaskFlowApiDown
+        expr: probe_success{job="blackbox-health"} == 0
+        for: 1m # 4 sondes ratées d'affilée : pas d'alerte pour un redémarrage de quelques secondes
+        labels:
+          severity: critical
+        annotations:
+          summary: "TaskFlow ({{ $labels.env }}) est en panne"
+          description: "La sonde {{ $labels.instance }} échoue depuis plus d'une minute : les utilisateurs ne peuvent plus utiliser l'application."
+          runbook_url: "https://github.com/Meii-Dicale/exo-devops/blob/main/monitoring/RUNBOOK.md#taskflowapidown"
+
+      # Prometheus ne lit plus /metrics : on est aveugle (inhibée si TaskFlowApiDown est active).
+      - alert: TaskFlowMetricsDown
+        expr: up{job="taskflow-api"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Métriques de l'API TaskFlow ({{ $labels.env }}) illisibles"
+          description: "Prometheus n'arrive plus à collecter {{ $labels.instance }}/metrics depuis plus d'une minute."
+          runbook_url: "https://github.com/Meii-Dicale/exo-devops/blob/main/monitoring/RUNBOOK.md#taskflowmetricsdown"
+
+      - alert: TaskFlowHighErrorRate
+        expr: taskflow:http_errors:ratio5m > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Trop d'erreurs 5xx sur TaskFlow ({{ $labels.env }})"
+          description: "{{ $value | humanizePercentage }} des requêtes finissent en 5xx depuis 5 minutes (seuil : 5 %)."
+          runbook_url: "https://github.com/Meii-Dicale/exo-devops/blob/main/monitoring/RUNBOOK.md#taskflowhigherrorrate"
+
+      - alert: TaskFlowHighLatency
+        expr: taskflow:http_request_duration_seconds:p95_5m > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskFlow ({{ $labels.env }}) est lent"
+          description: "Le p95 des requêtes vaut {{ $value | humanizeDuration }} depuis 5 minutes (seuil : 300 ms)."
+          runbook_url: "https://github.com/Meii-Dicale/exo-devops/blob/main/monitoring/RUNBOOK.md#taskflowhighlatency"
+
+      # Toujours active : prouve que la chaîne Prometheus -> Alertmanager fonctionne.
+      # Si elle disparaît d'Alertmanager, c'est la supervision elle-même qui est en panne.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Alerte de contrôle, toujours active (jamais notifiée)"
+          description: "Si elle disparaît d'Alertmanager, Prometheus ou Alertmanager est en panne : plus aucune alerte n'arriverait."

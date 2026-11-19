@@ -60,6 +60,26 @@ describe('API TaskFlow', () => {
 
       expect(response.status).toBe(400);
     });
+
+    it('répond 413 (et non 500) pour un corps de plus de 16 ko', async () => {
+      const response = await request(app)
+        .post('/api/tasks')
+        .send({ title: 'x'.repeat(17 * 1024) });
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual({ error: 'Requête trop volumineuse' });
+      expect(log).not.toHaveBeenCalledWith(
+        expect.objectContaining({ level: 'error' }),
+      );
+    });
+
+    it('accepte un corps sous la limite (la 400 vient de la validation)', async () => {
+      const response = await request(app)
+        .post('/api/tasks')
+        .send({ title: 'x'.repeat(15 * 1024) });
+
+      expect(response.status).toBe(400);
+    });
   });
 
   describe('PATCH /api/tasks/:id/toggle', () => {
@@ -139,6 +159,12 @@ describe('API TaskFlow', () => {
   });
 
   describe('erreurs et logs', () => {
+    it("n'annonce pas Express (pas d'en-tête X-Powered-By)", async () => {
+      const response = await request(app).get('/api/tasks');
+
+      expect(response.headers['x-powered-by']).toBeUndefined();
+    });
+
     it('répond 404 sur une route inconnue', async () => {
       const response = await request(app).get('/nimporte-quoi');
 

@@ -107,6 +107,10 @@ export function createApp({
 }) {
   const app = express();
 
+  // Ne pas annoncer la technologie (X-Powered-By: Express). Le front le masque déjà
+  // (proxy_hide_header), mais l'API ne doit pas dépendre du Nginx placé devant elle.
+  app.disable('x-powered-by');
+
   // /metrics AVANT le logger et la mesure : les collectes de Prometheus (toutes
   // les 15 s) ne polluent ni les logs ni les compteurs. Jamais routé par le front :
   // seul Prometheus, sur le réseau Docker, y accède.
@@ -114,7 +118,9 @@ export function createApp({
 
   app.use(createRequestLogger(log));
   app.use(metrics.middleware);
-  app.use(express.json());
+  // Un titre fait 200 caractères au plus : 16 ko suffisent largement (défaut : 100 ko).
+  // Au-delà, 413 avant toute allocation : un corps géant ne coûte rien à l'API.
+  app.use(express.json({ limit: '16kb' }));
 
   app.get('/health', createHealthHandler({ repository, appEnv, appVersion }));
   app.use('/api/tasks', createTaskRoutes(repository, metrics));
@@ -128,6 +134,11 @@ export function createApp({
   app.use((err, _req, res, _next) => {
     if (err.type === 'entity.parse.failed') {
       return res.status(400).json({ error: 'JSON invalide' });
+    }
+    // Erreur du client, pas du serveur : 413 et pas de log « error » (sinon un
+    // simple curl remplirait les logs et fausserait le taux d'erreurs 5xx).
+    if (err.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'Requête trop volumineuse' });
     }
     log({ level: 'error', message: err.message });
     return res.status(500).json({ error: 'Erreur interne du serveur' });

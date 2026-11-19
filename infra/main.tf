@@ -130,6 +130,9 @@ resource "docker_container" "front" {
   # Limite mémoire (Mo) : Nginx qui sert des fichiers statiques en utilise ~25.
   # Modifiable en place (docker update), sans recréer le conteneur.
   memory = 128
+  # Mémoire + swap. Écrit explicitement : à la création, Docker met 2 x memory
+  # (256) et, sans cette ligne, chaque plan voit une dérive (256 -> null).
+  memory_swap = 256
 
   # Seul conteneur qui publie un port sur le poste.
   ports {

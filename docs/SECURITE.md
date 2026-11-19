@@ -10,10 +10,10 @@ Les contrôles de sécurité du projet, le triage des alertes, les corrections, 
 | Secrets (avant commit) | **gitleaks** v8.30.1 (hook pre-commit) | poste | `git commit` | un secret qui part dans un commit |
 | Secrets (historique) | **gitleaks** v8.30.1, binaire vérifié par SHA-256 | `security.yml` › `secrets` | PR, push `main`, lundi, manuel | un secret déjà dans l'historique (le hook se contourne) |
 | Dépendances (SCA) | **npm audit** `--audit-level=high`, api et front | `security.yml` › `dependances` | PR, push `main`, **lundi** | une dépendance avec une CVE connue |
-| Dépendances (veille) | **Dependabot** | dépôt | planifié | des dépendances qui vieillissent |
+| Dépendances (veille) | **Dependabot** | `.github/dependabot.yml` | chaque semaine | des dépendances qui vieillissent |
 | Code (SAST) | **Semgrep** 1.184.0 (`p/javascript`, `p/nodejsscan`, `--error`) | `security.yml` › `sast` | PR, push `main`, lundi | injection SQL, XSS, `eval`, secrets en dur |
 | Application (DAST) | **ZAP baseline** 2.17.0 + `.zap/rules.tsv` | `security.yml` › `dast` | PR, push `main`, lundi | en-têtes, fuites d'information, cookies |
-| Image (SCA) | **Trivy** (bloquant sur CRITICAL) | `release.yml` | push `main` | une CVE dans l'image publiée |
+| Image (SCA) | **Trivy** (bloquant sur CRITICAL corrigeable, `ignore-unfixed`) | `release.yml` | push `main` | une CVE dans l'image publiée |
 | Configuration IaC | `tofu validate` / `plan` (drift) | `iac.yml` | PR, planifié | une infra qui dérive du code |
 | Durcissement HTTP | en-têtes **Nginx** | `front/nginx.conf`, proxy | chaque requête | XSS, clickjacking, fuite de version |
 | Moindre privilège | `permissions: contents: read`, actions **épinglées par SHA** | tous les workflows | toujours | un jeton détourné, une action modifiée après coup |

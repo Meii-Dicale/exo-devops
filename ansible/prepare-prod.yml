@@ -1,0 +1,158 @@
+# =============================================================================
+# prepare-prod.yml : prépare le dossier de la production TaskFlow (bonus étape 3).
+# Remplace les gestes manuels de l'étape 2 (dossiers, copies, .env, certificat)
+# par un playbook rejouable : au 2e passage, changed=0.
+#
+#   cd ansible
+#   ansible-playbook -i inventory.ini prepare-prod.yml --check --diff   # simulation
+#   ansible-playbook -i inventory.ini prepare-prod.yml
+#
+# Il PRÉPARE, il ne déploie pas : le déploiement reste le rôle de deploy.sh / Release.
+# Inspiré de la solution du formateur (solution/ansible/), adapté à notre dépôt :
+#   - FRONT_PORT dans le .env et .env.example copié : notre deploy.sh vérifie les clés ;
+#   - mot de passe repris du .env existant : un volume PostgreSQL déjà initialisé
+#     refuserait un nouveau mot de passe (POSTGRES_PASSWORD ne sert qu'à la création) ;
+#   - le .env n'apparaît jamais dans --diff (il contient le mot de passe) ;
+#   - le handler ne recharge que le proxy lancé depuis prod_dir (voir handlers).
+# =============================================================================
+- name: Préparer le dossier de la production TaskFlow
+  hosts: prod
+  gather_facts: true # ansible_env.HOME
+  vars:
+    prod_dir: "{{ ansible_env.HOME }}/taskflow-prod"
+    repo_dir: "{{ playbook_dir }}/.." # racine du dépôt (compose.prod.yaml, deploy/)
+    ghcr_owner: meii-dicale
+    app_env: production
+    image_tag: latest
+    http_port: 80
+    https_port: 443
+    front_port: 8081
+    # Utilisé seulement s'il n'y a pas encore de .env : généré au 1er passage, hors dépôt.
+    password_file: "{{ ansible_env.HOME }}/.config/taskflow/postgres-password"
+
+  pre_tasks:
+    - name: Vérifier les variables
+      ansible.builtin.assert:
+        that:
+          - ghcr_owner is match('^[a-z0-9][a-z0-9-]*$')
+          - http_port | int > 0 and https_port | int > 0 and front_port | int > 0
+          - app_env in ['production', 'staging']
+        fail_msg: "ghcr_owner en minuscules (ghcr.io refuse les majuscules), ports > 0, app_env production|staging"
+        quiet: true
+
+    - name: Chercher un .env existant
+      ansible.builtin.stat:
+        path: "{{ prod_dir }}/.env"
+      register: existing_env
+
+    - name: Lire le .env existant (contenu masqué)
+      ansible.builtin.slurp:
+        src: "{{ prod_dir }}/.env"
+      register: existing_env_content
+      when: existing_env.stat.exists
+      no_log: true
+
+    # Priorité au mot de passe déjà en place ; sinon, celui du fichier (créé s'il manque).
+    - name: Choisir le mot de passe PostgreSQL (valeur masquée)
+      ansible.builtin.set_fact:
+        postgres_password: >-
+          {{ (existing_env_content.content | b64decode
+              | regex_search('(?m)^POSTGRES_PASSWORD=(.+)$', '\1') | default([''], true) | first)
+             if existing_env.stat.exists else '' }}
+      no_log: true
+
+    - name: Créer le dossier du mot de passe (hors dépôt)
+      ansible.builtin.file:
+        path: "{{ password_file | dirname }}"
+        state: directory
+        mode: "0700"
+      when: postgres_password | length == 0
+
+    - name: Générer ou relire le mot de passe (valeur masquée)
+      ansible.builtin.set_fact:
+        postgres_password: "{{ lookup('ansible.builtin.password', password_file, chars=['ascii_letters', 'digits'], length=32) }}"
+      when: postgres_password | length == 0
+      no_log: true
+
+  tasks:
+    - name: Créer le dossier de déploiement et ses sous-dossiers
+      ansible.builtin.file:
+        path: "{{ prod_dir }}/{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "", mode: "0750" }
+        - { path: nginx, mode: "0750" }
+        - { path: certs, mode: "0700" } # clé privée TLS
+        - { path: backups, mode: "0700" } # dumps de la base
+
+    - name: Copier compose.prod.yaml et .env.example (deploy.sh compare les clés)
+      ansible.builtin.copy:
+        src: "{{ repo_dir }}/{{ item }}"
+        dest: "{{ prod_dir }}/{{ item }}"
+        mode: "0640"
+      loop: [compose.prod.yaml, .env.example]
+
+    - name: Copier les scripts de déploiement
+      ansible.builtin.copy:
+        src: "{{ repo_dir }}/deploy/{{ item }}"
+        dest: "{{ prod_dir }}/{{ item }}"
+        mode: "0750"
+      loop: [deploy.sh, smoke-test.sh, backup.sh, gen-cert.sh]
+
+    - name: Copier la configuration du proxy Nginx
+      ansible.builtin.copy:
+        src: "{{ repo_dir }}/deploy/nginx/taskflow.conf"
+        dest: "{{ prod_dir }}/nginx/taskflow.conf"
+        mode: "0640"
+      notify: Recharger le proxy
+
+    # diff: false : avec --diff, Ansible afficherait le fichier, donc le mot de passe.
+    - name: "Rendre le .env (0600, jamais dans Git, jamais affiché)"
+      ansible.builtin.template:
+        src: env.j2
+        dest: "{{ prod_dir }}/.env"
+        mode: "0600"
+      diff: false
+      notify: Rappeler de redéployer
+
+    # Pas de chdir : en simulation (--check) sur une machine neuve, prod_dir n'existe pas
+    # encore et Ansible échouerait avant même de pouvoir dire « serait lancé ».
+    - name: Générer le certificat auto-signé (une seule fois)
+      ansible.builtin.command:
+        cmd: "{{ prod_dir }}/gen-cert.sh"
+        creates: "{{ prod_dir }}/certs/taskflow.crt" # sinon : « changed » à chaque passage
+      environment:
+        CERT_DIR: "{{ prod_dir }}/certs"
+
+  handlers:
+    # compose.prod.yaml fixe "name: taskflow-prod" : un "docker compose exec proxy" lancé
+    # depuis N'IMPORTE QUEL dossier viserait le proxy de la vraie prod. On cherche donc le
+    # proxy dont Compose a noté le dossier de travail (label) : celui de prod_dir, et lui seul.
+    - name: Trouver le proxy lancé depuis prod_dir
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - label=com.docker.compose.service=proxy
+          - --filter
+          - "label=com.docker.compose.project.working_dir={{ prod_dir | realpath }}"
+      register: proxy_container
+      changed_when: false
+      failed_when: false # Docker arrêté ou stack pas encore lancée : rien à recharger
+      check_mode: false # lecture seule, utile aussi en simulation
+      listen: Recharger le proxy
+
+    # nginx -t d'abord : une conf invalide fait échouer le handler, l'ancienne reste en service.
+    - name: Tester puis recharger Nginx sans coupure (si le proxy tourne)
+      ansible.builtin.command:
+        argv: [docker, exec, "{{ proxy_container.stdout }}", sh, -c, "nginx -t && nginx -s reload"]
+      when: proxy_container.stdout | default('') | length > 0
+      changed_when: true
+      listen: Recharger le proxy
+
+    - name: Rappeler de redéployer
+      ansible.builtin.debug:
+        msg: ".env modifié : relancez ./deploy.sh <tag> dans {{ prod_dir }} (ou le workflow Release)"

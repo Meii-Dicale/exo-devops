@@ -1,0 +1,169 @@
+# ============================================================================
+# security.yml : contrôles de sécurité à chaque PR, sur main et chaque semaine.
+#
+#   secrets      gitleaks sur TOUT l'historique (le hook pre-commit se contourne)
+#   dependances  npm audit (SCA) pour api et front, rapport JSON en artefact
+#   sast         Semgrep (code source), règles publiques, sans compte
+#   dast         ZAP baseline (scan passif) contre la stack qui tourne
+#
+# Triage et exceptions : docs/SECURITE.md.
+# ============================================================================
+
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Le code ne change pas, mais les bases de CVE si : une dépendance saine lundi
+  # peut avoir une faille publiée mardi.
+  schedule:
+    - cron: "17 6 * * 1" # lundi 06:17 UTC
+  workflow_dispatch:
+
+# Lecture seule : aucun job n'écrit dans le dépôt.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  # gitleaks_8.30.1_checksums.txt de la release officielle
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  SEMGREP_IMAGE: docker.io/semgrep/semgrep:1.184.0
+  ZAP_IMAGE: ghcr.io/zaproxy/zaproxy:2.17.0
+
+jobs:
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # tout l'historique : un secret supprimé reste dans un vieux commit
+          persist-credentials: false
+
+      # Binaire officiel, vérifié par sa somme SHA-256 avant exécution
+      # (l'action gitleaks exige une licence pour les comptes d'organisation).
+      - name: Installer gitleaks (somme vérifiée)
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" gitleaks
+
+      - name: gitleaks (historique complet)
+        run: ./gitleaks git --redact --verbose --exit-code 1 .
+
+  dependances:
+    name: dependances (${{ matrix.dossier }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false # garder le verdict de api ET de front
+      matrix:
+        dossier: [api, front]
+    defaults:
+      run:
+        working-directory: ${{ matrix.dossier }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+
+      # Rapport complet (toutes sévérités) pour le triage, même si le job échoue ensuite.
+      - name: Rapport npm audit (JSON)
+        run: npm audit --json > "npm-audit-${{ matrix.dossier }}.json" || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-audit-${{ matrix.dossier }}
+          path: ${{ matrix.dossier }}/npm-audit-${{ matrix.dossier }}.json
+          retention-days: 14
+
+      # Le verdict : échec sur high ou critical (dependencies ET devDependencies).
+      - name: npm audit --audit-level=high
+        run: npm audit --audit-level=high
+
+  sast:
+    name: sast
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # --error : un résultat = job rouge. Un faux positif se traite par
+      # « // nosemgrep: <règle> » justifié dans docs/SECURITE.md, jamais en retirant une règle.
+      # --user : le rapport est écrit avec l'utilisateur du runner (sinon, permission
+      # refusée sur le dossier monté) ; HOME=/tmp pour le cache de Semgrep.
+      - name: Semgrep (p/javascript + p/nodejsscan)
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:/src" -w /src "$SEMGREP_IMAGE" \
+            semgrep scan --config p/javascript --config p/nodejsscan \
+            --metrics=off --error --sarif-output=semgrep.sarif
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: semgrep
+          path: semgrep.sarif
+          retention-days: 14
+          if-no-files-found: ignore
+
+  dast:
+    name: dast
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # La stack de dev (compose.yaml) : db + api + front sur http://localhost:8080.
+      - name: Démarrer la stack
+        run: docker compose up -d --build --wait
+
+      - name: Vérifier /health
+        run: curl -sSf http://localhost:8080/health
+
+      # Baseline = scan passif (spider + analyse des réponses), sans attaque.
+      # .zap/rules.tsv : FAIL sur les en-têtes corrigés (une régression rend la PR rouge),
+      # IGNORE justifiés dans docs/SECURITE.md. -I : les WARN restants n'échouent pas.
+      - name: ZAP baseline
+        run: |
+          mkdir -p zap-wrk
+          cp .zap/rules.tsv zap-wrk/
+          chmod -R a+rwx zap-wrk # ZAP tourne en uid 1000 dans son conteneur
+          docker run --rm --network host -v "$PWD/zap-wrk:/zap/wrk:rw" "$ZAP_IMAGE" \
+            zap-baseline.py -t http://localhost:8080 -c rules.tsv -I \
+            -r rapport-zap.html -J rapport-zap.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: zap
+          path: |
+            zap-wrk/rapport-zap.html
+            zap-wrk/rapport-zap.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Logs de la stack (en cas d'échec)
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Arrêter la stack
+        if: always()
+        run: docker compose down -v

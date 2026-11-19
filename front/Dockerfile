@@ -20,9 +20,10 @@ COPY . .
 RUN npm run build
 
 # ---------- Étape 2 : servir le site avec Nginx -----------------------------
-# 1.29 : même version que le proxy de compose.prod.yaml. `apk upgrade` applique
+# 1.30 : branche stable maintenue (la 1.29 ne reçoit plus de correctifs, ZAP y voyait
+# des CVE), même version que le proxy de compose.prod.yaml. `apk upgrade` applique
 # les correctifs Alpine (OpenSSL, brotli...) publiés depuis la sortie de l'image.
-FROM nginx:1.29-alpine
+FROM nginx:1.30-alpine
 RUN apk upgrade --no-cache
 
 # L'image Nginx remplace les variables ${...} des fichiers placés dans

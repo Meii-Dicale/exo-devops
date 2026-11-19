@@ -29,6 +29,23 @@ export IMAGE_TAG="$TAG"
 [ -f "$COMPOSE_FILE" ] || { echo "Fichier $COMPOSE_FILE absent de $DEPLOY_DIR" >&2; exit 1; }
 [ -f .env ] || { echo ".env absent de $DEPLOY_DIR : il se crée à la main (jamais dans Git)" >&2; exit 1; }
 
+# Post-mortem de l'incident n° 1 (docs/INCIDENTS.md) : une DATABASE_URL disparue du
+# .env n'a été vue qu'en production, par des 502. Chaque clé de .env.example (copié
+# avec ce script) doit exister dans .env avec une valeur non vide. On compare les
+# NOMS des clés : aucune valeur n'est jamais affichée.
+[ -f .env.example ] || { echo ".env.example absent de $DEPLOY_DIR : impossible de vérifier le .env" >&2; exit 1; }
+MISSING_KEYS=""
+for key in $(grep -oE '^[A-Z_][A-Z0-9_]*=' .env.example | tr -d '='); do
+  # Valeur vide : "KEY=", "KEY=''" ou 'KEY=""'.
+  if ! grep -E "^${key}=" .env | grep -qvE "^${key}=(''|\"\")?[[:space:]]*$"; then
+    MISSING_KEYS="$MISSING_KEYS $key"
+  fi
+done
+if [ -n "$MISSING_KEYS" ]; then
+  echo ".env incomplet, clé(s) absente(s) ou vide(s) :$MISSING_KEYS (modèle : .env.example). Rien n'a été déployé." >&2
+  exit 1
+fi
+
 echo "==> $COMPOSE_FILE : déploiement de $TAG dans $DEPLOY_DIR"
 
 # Mémorise la version actuelle AVANT de la remplacer : c'est la cible du rollback.

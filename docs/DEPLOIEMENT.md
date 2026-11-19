@@ -25,7 +25,7 @@ configuration change, et elle vient du `.env` de chaque dossier (jamais dans Git
 REPO=~/taskflow
 # Production
 mkdir -p ~/taskflow-prod/nginx && cd ~/taskflow-prod
-cp $REPO/compose.prod.yaml $REPO/deploy/*.sh . && cp $REPO/deploy/nginx/taskflow.conf nginx/
+cp $REPO/compose.prod.yaml $REPO/.env.example $REPO/deploy/*.sh . && cp $REPO/deploy/nginx/taskflow.conf nginx/
 cp $REPO/.env.example .env && chmod 600 .env
 PASS=$(openssl rand -hex 24); sed -i "s/changez-moi/$PASS/g" .env   # puis GHCR_OWNER (minuscules), ports
 ./gen-cert.sh
@@ -33,7 +33,7 @@ PASS=$(openssl rand -hex 24); sed -i "s/changez-moi/$PASS/g" .env   # puis GHCR_
 
 # Staging
 mkdir -p ~/taskflow-staging && cd ~/taskflow-staging
-cp $REPO/compose.staging.yaml $REPO/deploy/deploy.sh $REPO/deploy/smoke-test.sh .
+cp $REPO/compose.staging.yaml $REPO/.env.example $REPO/deploy/deploy.sh $REPO/deploy/smoke-test.sh .
 cp $REPO/.env.example .env && chmod 600 .env
 PASS=$(openssl rand -hex 24); sed -i "s/changez-moi/$PASS/g; s/^APP_ENV=.*/APP_ENV=staging/" .env
 COMPOSE_FILE=compose.staging.yaml ./deploy.sh <sha-court>

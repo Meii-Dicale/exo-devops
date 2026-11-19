@@ -150,7 +150,7 @@ par défaut prévue pour le poste de développement.
 
 | Action | Type | Issue | Statut |
 | --- | --- | --- | --- |
-| L'API refuse de démarrer si `DATABASE_URL` est absente ou vide hors `APP_ENV=local` ; test dans `api/tests/config.test.js` | prévention | [#21](https://github.com/Meii-Dicale/exo-devops/issues/21) | à faire |
+| L'API refuse de démarrer si `DATABASE_URL` est absente ou vide hors `APP_ENV=local` ; test dans `api/tests/config.test.js` | prévention | [#21](https://github.com/Meii-Dicale/exo-devops/issues/21) | fait ([#23](https://github.com/Meii-Dicale/exo-devops/pull/23)) |
 | `deploy.sh` compare les clés de `.env` à celles de `.env.example` et s'arrête s'il en manque une | prévention | à créer | à faire |
 | Dashboard : panneau « Code HTTP de la sonde » (`probe_http_status_code`), pour voir les 502 que l'API ne compte pas | détection | à créer | à faire |
 | Runbook : recréer l'API avec `--no-deps`, et supprimer `.env.bak` une fois l'incident clos | processus | à créer | à faire |

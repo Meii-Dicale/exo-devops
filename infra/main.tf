@@ -127,6 +127,10 @@ resource "docker_container" "front" {
   image   = docker_image.front.image_id
   restart = "unless-stopped"
 
+  # Limite mémoire (Mo) : Nginx qui sert des fichiers statiques en utilise ~25.
+  # Modifiable en place (docker update), sans recréer le conteneur.
+  memory = 128
+
   # Seul conteneur qui publie un port sur le poste.
   ports {
     internal = 80

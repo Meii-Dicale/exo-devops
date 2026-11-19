@@ -1,5 +1,7 @@
 # TaskFlow
 
+[![CI](https://github.com/Meii-Dicale/exo-devops/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/Meii-Dicale/exo-devops/actions/workflows/ci.yml?query=branch%3Amain) [![Security](https://github.com/Meii-Dicale/exo-devops/actions/workflows/security.yml/badge.svg?branch=main&event=push)](https://github.com/Meii-Dicale/exo-devops/actions/workflows/security.yml?query=branch%3Amain) [![CodeQL](https://github.com/Meii-Dicale/exo-devops/actions/workflows/codeql.yml/badge.svg?branch=main&event=push)](https://github.com/Meii-Dicale/exo-devops/actions/workflows/codeql.yml?query=branch%3Amain) [![Release](https://github.com/Meii-Dicale/exo-devops/actions/workflows/release.yml/badge.svg?branch=main&event=push)](https://github.com/Meii-Dicale/exo-devops/actions/workflows/release.yml?query=branch%3Amain)
+
 Un gestionnaire de tâches volontairement simple : c'est le **fil rouge** de la formation DevOps. Le code applicatif est
 fourni et testé ; votre travail porte sur tout ce qui l'entoure : intégration continue, livraison, infrastructure,
 supervision, sécurité.

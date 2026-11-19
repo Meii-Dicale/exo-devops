@@ -1,0 +1,55 @@
+# Prometheus : QUOI collecter (scrape_configs), quelles règles évaluer, où envoyer les alertes.
+#   docker compose -f compose.monitoring.yaml exec prometheus promtool check config /etc/prometheus/prometheus.yml
+#   curl -X POST http://localhost:9090/-/reload     # recharger après une modification
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s # fréquence d'évaluation des règles (recording + alertes)
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # Prometheus se surveille lui-même.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Boîte blanche : ce que l'API dit d'elle-même (RED, métier, process Node).
+  # api:3000 n'est joignable que sur le réseau Docker taskflow-prod.
+  - job_name: taskflow-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:3000"]
+        labels:
+          env: prod
+
+  # Boîte noire : ce que voit un utilisateur. blackbox fait GET http://front/health
+  # (front -> Nginx -> API -> base) et renvoie probe_success 1 ou 0.
+  - job_name: blackbox-health
+    metrics_path: /probe
+    params:
+      module: [http_health] # défini dans blackbox/blackbox.yml
+    static_configs:
+      - targets: ["http://front/health"]
+        labels:
+          env: prod
+    relabel_configs:
+      # 1. la cible devient le paramètre ?target= de la requête vers blackbox ;
+      - source_labels: [__address__]
+        target_label: __param_target
+      # 2. on garde l'URL sondée comme label instance (lisible dans les alertes) ;
+      - source_labels: [__param_target]
+        target_label: instance
+      # 3. la requête part en réalité vers blackbox.
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # Les métriques de blackbox lui-même (s'il tombe, plus aucune sonde).
+  - job_name: blackbox
+    static_configs:
+      - targets: ["blackbox:9115"]

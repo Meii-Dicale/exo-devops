@@ -1,0 +1,65 @@
+# ============================================================================
+# monitoring.yml : la configuration de supervision (monitoring/) est testée
+# comme du code, sans lancer la stack.
+#
+#   promtool check config : syntaxe de prometheus.yml et des règles
+#   promtool test rules   : comportement des alertes (pending / firing)
+#   amtool check-config   : routage d'Alertmanager
+#
+# Mêmes versions d'images que compose.monitoring.yaml.
+# ============================================================================
+
+name: Monitoring
+
+on:
+  pull_request:
+    paths:
+      - "monitoring/**"
+      - ".github/workflows/monitoring.yml"
+  push:
+    branches: [main]
+    paths:
+      - "monitoring/**"
+      - ".github/workflows/monitoring.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoring-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROMETHEUS_IMAGE: docker.io/prom/prometheus:v3.15.1
+  ALERTMANAGER_IMAGE: docker.io/prom/alertmanager:v0.35.0
+
+jobs:
+  monitoring-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # prometheus.yml cite les règles par leur chemin dans le conteneur
+      # (/etc/prometheus/rules) : on monte les fichiers au même endroit qu'en vrai.
+      - name: promtool check config
+        run: |
+          docker run --rm \
+            -v "$PWD/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/monitoring/prometheus/rules:/etc/prometheus/rules:ro" \
+            --entrypoint promtool "$PROMETHEUS_IMAGE" \
+            check config /etc/prometheus/prometheus.yml
+
+      - name: promtool test rules
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/p:ro" -w /p/tests \
+            --entrypoint promtool "$PROMETHEUS_IMAGE" \
+            test rules taskflow_test.yml
+
+      - name: amtool check-config
+        run: |
+          docker run --rm -v "$PWD/monitoring/alertmanager:/a:ro" \
+            --entrypoint amtool "$ALERTMANAGER_IMAGE" \
+            check-config /a/alertmanager.yml

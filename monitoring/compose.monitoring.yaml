@@ -1,0 +1,102 @@
+# Supervision de la production TaskFlow : Prometheus, blackbox, Alertmanager, Mailpit, Grafana.
+#
+#   cd monitoring
+#   cp .env.example .env    # puis mettre un vrai mot de passe Grafana (.env ignoré par Git)
+#   docker compose -f compose.monitoring.yaml up -d
+#
+# La prod doit tourner : c'est elle qui crée le réseau « taskflow-prod ».
+name: taskflow-monitoring
+
+services:
+  prometheus:
+    image: docker.io/prom/prometheus:v3.15.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      # POST /-/reload recharge la config sans redémarrer (port publié sur 127.0.0.1 seulement)
+      - --web.enable-lifecycle
+      # Liens cliquables dans les notifications (« Source » d'une alerte -> ce Prometheus).
+      - --web.external-url=http://localhost:9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ./prometheus/tests:/etc/prometheus/tests:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring
+      - taskflow # pour joindre api:3000 (collecte de /metrics)
+    restart: unless-stopped
+
+  blackbox:
+    image: docker.io/prom/blackbox-exporter:v0.29.1
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    # Pas de port publié : seul Prometheus l'interroge, sur le réseau monitoring.
+    networks:
+      - monitoring
+      - taskflow # pour sonder http://front/health comme un utilisateur
+    restart: unless-stopped
+
+  alertmanager:
+    image: docker.io/prom/alertmanager:v0.35.0
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.external-url=http://localhost:9093
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager # silences et état des notifications
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  mailpit:
+    # Faux serveur SMTP : capte les mails d'Alertmanager et les affiche sur :8025.
+    image: docker.io/axllent/mailpit:v1.34.0
+    ports:
+      - "127.0.0.1:8025:8025"
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana:13.2.6
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Obligatoire : lu dans monitoring/.env (ignoré par Git), jamais de valeur par défaut.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD manquant (voir .env.example)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Le dashboard RED s'ouvre en page d'accueil.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/taskflow-red.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+networks:
+  monitoring: {}
+  # Réseau de la prod, créé par compose.prod.yaml : on s'y raccorde sans le gérer.
+  taskflow:
+    name: taskflow-prod
+    external: true
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

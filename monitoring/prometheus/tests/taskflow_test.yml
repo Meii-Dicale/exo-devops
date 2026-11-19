@@ -1,0 +1,101 @@
+# Tests unitaires des règles, sans lancer la stack :
+#   promtool test rules taskflow_test.yml   (depuis ce dossier)
+rule_files:
+  - ../rules/taskflow.yml
+
+evaluation_interval: 15s
+
+tests:
+  # La sonde échoue dès t = 0 : pending pendant la première minute, firing ensuite.
+  - interval: 15s
+    input_series:
+      - series: 'probe_success{job="blackbox-health", instance="http://front/health", env="prod"}'
+        values: "0x10" # 11 points à 0 : de 0 s à 2 min 30
+    alert_rule_test:
+      # À 30 s : l'alerte est pending (for: 1m pas écoulé), donc rien n'est envoyé.
+      - eval_time: 30s
+        alertname: TaskFlowApiDown
+        exp_alerts: []
+      # À 1 min 30 : firing.
+      - eval_time: 90s
+        alertname: TaskFlowApiDown
+        exp_alerts:
+          - exp_labels:
+              alertname: TaskFlowApiDown
+              severity: critical
+              job: blackbox-health
+              instance: http://front/health
+              env: prod
+            exp_annotations:
+              summary: "TaskFlow (prod) est en panne"
+              description: "La sonde http://front/health échoue depuis plus d'une minute : les utilisateurs ne peuvent plus utiliser l'application."
+              runbook_url: "https://github.com/Meii-Dicale/exo-devops/blob/main/monitoring/RUNBOOK.md#taskflowapidown"
+    promql_expr_test:
+      # Preuve explicite de l'état pending à 30 s (exp_alerts ne voit que le firing).
+      - expr: ALERTS{alertname="TaskFlowApiDown"}
+        eval_time: 30s
+        exp_samples:
+          - labels: 'ALERTS{alertname="TaskFlowApiDown", alertstate="pending", severity="critical", job="blackbox-health", instance="http://front/health", env="prod"}'
+            value: 1
+
+  # Une sonde ratée isolée (redémarrage) ne déclenche rien.
+  - interval: 15s
+    input_series:
+      - series: 'probe_success{job="blackbox-health", instance="http://front/health", env="prod"}'
+        values: "1 1 0 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TaskFlowApiDown
+        exp_alerts: []
+
+  # 1 requête 5xx sur 4 = 25 % d'erreurs : recording rule, puis alerte après 5 min au-dessus de 5 %.
+  - interval: 15s
+    input_series:
+      - series: 'http_requests_total{job="taskflow-api", env="prod", method="GET", route="/api/tasks", status_code="200"}'
+        values: "0+3x60"
+      - series: 'http_requests_total{job="taskflow-api", env="prod", method="GET", route="/api/tasks", status_code="500"}'
+        values: "0+1x60"
+    promql_expr_test:
+      - expr: taskflow:http_errors:ratio5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'taskflow:http_errors:ratio5m{job="taskflow-api", env="prod"}'
+            value: 0.25
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: TaskFlowHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              alertname: TaskFlowHighErrorRate
+              severity: warning
+              job: taskflow-api
+              env: prod
+            exp_annotations:
+              summary: "Trop d'erreurs 5xx sur TaskFlow (prod)"
+              description: "25% des requêtes finissent en 5xx depuis 5 minutes (seuil : 5 %)."
+              runbook_url: "https://github.com/Meii-Dicale/exo-devops/blob/main/monitoring/RUNBOOK.md#taskflowhigherrorrate"
+
+  # Du trafic sans aucune 5xx : le ratio vaut 0 (et non « pas de valeur »).
+  - interval: 15s
+    input_series:
+      - series: 'http_requests_total{job="taskflow-api", env="prod", method="GET", route="/api/tasks", status_code="200"}'
+        values: "0+3x20"
+    promql_expr_test:
+      - expr: taskflow:http_errors:ratio5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'taskflow:http_errors:ratio5m{job="taskflow-api", env="prod"}'
+            value: 0
+
+  # Watchdog : toujours active.
+  - interval: 15s
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              alertname: Watchdog
+              severity: none
+            exp_annotations:
+              summary: "Alerte de contrôle, toujours active (jamais notifiée)"
+              description: "Si elle disparaît d'Alertmanager, Prometheus ou Alertmanager est en panne : plus aucune alerte n'arriverait."
